@@ -1,0 +1,127 @@
+name: supernote-private-cloud
+
+networks:
+  supernote-net:
+    driver: bridge
+    name: supernote-net
+
+services:
+  mariadb:
+    image: mariadb:10.6.24
+    container_name: supernote-mariadb
+    networks:
+      - supernote-net
+    command: --skip-name-resolve --bind-address=0.0.0.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      TZ: ${TZ:-Europe/London}
+    volumes:
+      - supernote_db_data:/var/lib/mysql
+    configs:
+      - source: supernotedb_sql
+        target: /docker-entrypoint-initdb.d/supernotedb.sql
+        mode: 0444
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$$MYSQL_ROOT_PASSWORD || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4.7
+    container_name: supernote-redis
+    networks:
+      - supernote-net
+    command:
+      [
+        "redis-server",
+        "--requirepass", "${REDIS_PASSWORD}",
+        "--dir", "/data",
+        "--dbfilename", "dump.rdb"
+      ]
+    environment:
+      TZ: ${TZ:-Europe/London}
+    volumes:
+      - supernote_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  notelib:
+    image: docker.io/supernote/notelib:${NOTELIB_IMAGE_TAG}
+    container_name: notelib
+    networks:
+      - supernote-net
+    environment:
+      TZ: ${TZ:-Europe/London}
+    restart: unless-stopped
+
+  supernote-service:
+    image: docker.io/supernote/supernote-service:${SUPNOTE_IMAGE_TAG}
+    container_name: supernote-service
+    networks:
+      - supernote-net
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "19072:8080"
+      - "19443:443"
+      - "18072:18072"
+    environment:
+      # DB connection
+      DB_HOSTNAME: ${DB_HOSTNAME:-supernote-mariadb}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+
+      # Redis connection
+      REDIS_HOST: ${REDIS_HOST:-supernote-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+      # Optional HTTPS custom domain (set these in Portainer only if using custom certs)
+      DOMAIN_NAME: ${DOMAIN_NAME:-}
+      SSL_CERT_NAME: ${SSL_CERT_NAME:-server.crt}
+      SSL_KEY_NAME: ${SSL_KEY_NAME:-server.key}
+
+      TZ: ${TZ:-Europe/London}
+    volumes:
+      - supernote_app_data:/home/supernote/data
+      - supernote_recycle:/home/supernote/recycle
+      - supernote_logs_cloud:/home/supernote/cloud/logs
+      - supernote_logs_app:/home/supernote/logs
+      - supernote_logs_web:/var/log/nginx
+      - supernote_convert:/home/supernote/convert
+      - supernote_cert:/etc/nginx/cert
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    restart: unless-stopped
+
+configs:
+  supernotedb_sql:
+    file: ./supernotedb.sql
+
+volumes:
+  supernote_db_data:
+  supernote_redis_data:
+  supernote_app_data:
+  supernote_recycle:
+  supernote_logs_cloud:
+  supernote_logs_app:
+  supernote_logs_web:
+  supernote_convert:
+  supernote_cert:
